@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from collections.abc import Mapping
+from datetime import date, timedelta
 import logging
+from typing import Any
 
 from pysuez import SuezClient
 from pysuez.client import PySuezError
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor.const import SensorStateClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfVolume
+from homeassistant.const import CURRENCY_EURO, UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_COUNTER_ID, DOMAIN
-
-_LOGGER = logging.getLogger(__name__)
+from .coordinator import SuezWaterCoordinator
 
 SCAN_INTERVAL = timedelta(hours=12)
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -28,12 +33,121 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Suez Water sensor from a config entry."""
-    client = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([SuezSensor(client, entry.data[CONF_COUNTER_ID])], True)
+    dic = hass.data[DOMAIN][entry.entry_id]
+    coordinator = dic["coordinator"]
+    client = dic["client"]
+    counter_id = entry.data[CONF_COUNTER_ID]
+    async_add_entities(
+        [
+            SuezLastDayConsumptionSensor(coordinator, counter_id),
+            SuezForeverTotalIncreasingSensor(coordinator, counter_id),
+            SuezPriceSensor(coordinator, counter_id),
+        ],
+    )
+    async_add_entities(
+        [
+            SuezAggregatedSensor(client, counter_id),
+        ],
+        True,
+    )
 
 
-class SuezSensor(SensorEntity):
-    """Representation of a Sensor."""
+class SuezSensorEntity(CoordinatorEntity, SensorEntity):
+    """Representation of a Suez Sensor."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self, coordinator: SuezWaterCoordinator, counter_id: int, name: str
+    ) -> None:
+        """Initialize the data object."""
+        super().__init__(coordinator, context=counter_id)
+        self.coordinator: SuezWaterCoordinator = coordinator
+        self._attr_extra_state_attributes = {}
+        self._attr_translation_key = name
+        self._attr_unique_id = f"{counter_id}_{name}"
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, str(counter_id))},
+            entry_type=DeviceEntryType.SERVICE,
+            manufacturer="Suez",
+        )
+        self._attr_attribution = self.coordinator.get_attribution()
+
+    async def async_update(self) -> None:
+        """Update Suez sensor."""
+        await self.coordinator.async_request_refresh()
+
+
+class SuezLastDayConsumptionSensor(SuezSensorEntity):
+    """Representation of Suez yesterday Sensor."""
+
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_device_class = SensorDeviceClass.WATER
+
+    def __init__(self, coordinator: SuezWaterCoordinator, counter_id: int) -> None:
+        """Initialize the data object."""
+        super().__init__(coordinator, counter_id, "water_usage_last_day")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current daily usage."""
+        if self.coordinator.consumption_last_day is None:
+            return None
+        consumption: float = self.coordinator.consumption_last_day.day_consumption
+        return consumption
+
+    @property
+    def extra_state_attributes(self) -> Mapping[str, Any] | None:
+        """Return last day consumption attributes."""
+        if self.coordinator.consumption_last_day is None:
+            return None
+        return {
+            "date": date(
+                year=self.coordinator.consumption_last_day.year,
+                month=self.coordinator.consumption_last_day.month,
+                day=self.coordinator.consumption_last_day.day,
+            )
+        }
+
+
+class SuezPriceSensor(SuezSensorEntity):
+    """Representation of a Price Sensor."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = CURRENCY_EURO
+
+    def __init__(self, coordinator: SuezWaterCoordinator, counter_id: int) -> None:
+        """Initialize Price sensor."""
+        super().__init__(coordinator, counter_id, "price_sensor")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current water price."""
+        return self.coordinator.price
+
+
+class SuezForeverTotalIncreasingSensor(SuezSensorEntity):
+    """Representation of a Suez Forever Total Increasing Sensor."""
+
+    _attr_native_unit_of_measurement = UnitOfVolume.LITERS
+    _attr_device_class = SensorDeviceClass.WATER
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator: SuezWaterCoordinator, counter_id: int) -> None:
+        """Initialize suez forever total increasing."""
+        super().__init__(coordinator, counter_id, "water_usage_forever_total")
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the current total usage."""
+        if self.coordinator.index is None:
+            return None
+        index: float = self.coordinator.index.content.index
+        return index
+
+
+class SuezAggregatedSensor(SensorEntity):
+    """Representation of a Suez water Sensor."""
 
     _attr_has_entity_name = True
     _attr_translation_key = "water_usage_yesterday"
@@ -84,6 +198,9 @@ class SuezSensor(SensorEntity):
                 self._attr_extra_state_attributes["history"][item] = (
                     self.client.attributes["history"][item]
                 )
+            self._attr_extra_state_attributes["deprecated"] = (
+                "This sensor is deprecated and will be removed in a future version.\nPlease move to another provided sensor, if you need access to some of the extra attributes let us know and will make them available as sensors."
+            )
 
         except PySuezError:
             self._attr_available = False
