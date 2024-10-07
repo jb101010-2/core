@@ -21,7 +21,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_USERNAME): str,
         vol.Required(CONF_PASSWORD): str,
-        vol.Required(CONF_COUNTER_ID): str,
+        vol.Optional(CONF_COUNTER_ID): str,
     }
 )
 
@@ -32,14 +32,16 @@ def validate_input(data: dict[str, Any]) -> None:
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
     try:
+        counter = data.get(CONF_COUNTER_ID)
         client = SuezClient(
             data[CONF_USERNAME],
             data[CONF_PASSWORD],
-            data[CONF_COUNTER_ID],
-            provider=None,
+            counter,
         )
         if not client.check_credentials():
             raise InvalidAuth
+        if counter is None:
+            data[CONF_COUNTER_ID] = client.counter_finder()
     except PySuezError as ex:
         raise CannotConnect from ex
 
@@ -67,8 +69,9 @@ class SuezWaterConfigFlow(ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception")
                 errors["base"] = "unknown"
             else:
+                data = {**user_input}
                 return self.async_create_entry(
-                    title=user_input[CONF_USERNAME], data=user_input
+                    title=f"suez_{user_input[CONF_COUNTER_ID]}", data=data
                 )
 
         return self.async_show_form(

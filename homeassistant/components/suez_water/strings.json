@@ -20,8 +20,28 @@
   },
   "entity": {
     "sensor": {
+      "water_usage_last_day": {
+        "name": "Water usage last day"
+      },
       "water_usage_yesterday": {
-        "name": "Water usage yesterday"
+        "name": "Water usage yesterday - historical sensor"
+      },
+      "price_sensor": {
+        "name": "Price per m3"
+      },
+      "water_usage_total": {
+        "name": "Water usage total"
+      },
+      "water_usage_forever_total": {
+        "name": "Counter total water usage"
+      }
+    },
+    "binary_sensor": {
+      "leak_sensor": {
+        "name": "Leak"
+      },
+      "overconsumption_sensor": {
+        "name": "Overconsumption"
       }
     }
   }

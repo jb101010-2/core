@@ -2,39 +2,45 @@
 
 from __future__ import annotations
 
-from pysuez import SuezClient
-from pysuez.client import PySuezError
+import logging
+
+from pysuez import SuezClient, SuezData
+from pysuez.async_client import SuezAsyncClient
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 
 from .const import CONF_COUNTER_ID, DOMAIN
+from .coordinator import SuezWaterCoordinator
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Suez Water from a config entry."""
 
-    def get_client() -> SuezClient:
-        try:
-            client = SuezClient(
-                entry.data[CONF_USERNAME],
-                entry.data[CONF_PASSWORD],
-                entry.data[CONF_COUNTER_ID],
-                provider=None,
-            )
-            if not client.check_credentials():
-                raise ConfigEntryError
-        except PySuezError as ex:
-            raise ConfigEntryNotReady from ex
-        return client
+    async_client = SuezAsyncClient(
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        entry.data[CONF_COUNTER_ID],
+    )
+    data = SuezData(async_client)
+    coordinator = SuezWaterCoordinator(
+        hass, async_client, data, entry.data[CONF_COUNTER_ID]
+    )
+    await coordinator.async_config_entry_first_refresh()
+    client = SuezClient(
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        entry.data[CONF_COUNTER_ID],
+    )
 
-    hass.data.setdefault(DOMAIN, {})[
-        entry.entry_id
-    ] = await hass.async_add_executor_job(get_client)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "coordinator": coordinator,
+        "client": client,
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
