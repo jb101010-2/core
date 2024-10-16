@@ -1,14 +1,22 @@
 """Suez water update coordinator."""
 
 import asyncio
-from datetime import datetime, timedelta
-from typing import Any
+from datetime import date, datetime, time, timedelta
+from typing import Any, cast
 
 from pysuez import SuezData
 from pysuez.async_client import SuezAsyncClient
 from pysuez.client import PySuezError
 from pysuez.suez_data import AlertResult, ConsumptionIndexResult, DayDataResult
 
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
+from homeassistant.components.recorder.statistics import (
+    StatisticsRow,
+    async_add_external_statistics,
+    get_last_statistics,
+)
+from homeassistant.const import UnitOfVolume
 from homeassistant.core import _LOGGER, HomeAssistant
 from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -27,11 +35,12 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         counter_id: int,
     ) -> None:
         """Initialize my coordinator."""
+        name = f"{DOMAIN}_{counter_id}"
         super().__init__(
             hass,
             _LOGGER,
-            name=f"{DOMAIN}_{counter_id}",
-            update_interval=timedelta(minutes=3),
+            name=name,
+            update_interval=timedelta(hours=12),
             always_update=True,
         )
         self._async_client = async_client
@@ -40,7 +49,9 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         self._price: None | float = None
         self.alerts: None | AlertResult = None
         self.index: None | ConsumptionIndexResult = None
-        _LOGGER.debug("Creating coordinator")
+        self._statistic_id = f"{name}:water_consumption"
+        self.config_entry.async_on_unload(self._clear_statistics)
+        _LOGGER.debug("Created coordinator")
 
     async def _async_setup(self) -> None:
         """Set up the coordinator."""
@@ -67,6 +78,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 await self._fetch_consumption_index()
                 await self._fetch_price()
                 await self._fetch_alerts()
+                await self._update_historical()
                 await self._async_client.close_session()
                 _LOGGER.info("Suez update completed")
                 return {"update": datetime.now()}
@@ -98,6 +110,70 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
 
     async def _fetch_alerts(self) -> None:
         self.alerts = await self._data_api.get_alerts()
+
+    async def _update_historical(self) -> None:
+        _LOGGER.info("Updating statistics for %s", self._statistic_id)
+
+        last_stat = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, self._statistic_id, True, set()
+            )
+        _LOGGER.info("last stat of suez is %s", last_stat)
+        usage: list[DayDataResult]
+        last_stats_time: date
+        if not last_stat:
+                _LOGGER.debug("Updating statistic for the first time")
+                usage = await self._data_api.fetch_all_available()
+                consumption_sum = 0.0
+                last_stats_time = None
+        else:
+                previous_stat: StatisticsRow = last_stat[self._statistic_id][0]
+                last_stats_time = datetime.fromtimestamp(previous_stat["start"]).date()
+                usage = await self._data_api.fetch_all_available(
+                    since=last_stats_time.date(),
+                )
+                if len(usage) <= 0:
+                    _LOGGER.debug("No recent usage data. Skipping update")
+                    return
+                consumption_sum = cast(float, previous_stat.sum)
+        _LOGGER.info("last stat of suez is %s / %s", consumption_sum, last_stats_time)
+        _LOGGER.info("fetched data: %s", len(usage))
+
+        consumption_statistics = []
+
+        for data in usage:
+            if last_stats_time is not None and data.date <= last_stats_time:
+                continue
+            consumption_sum += data.day_consumption
+            consumption_statistics.append(
+                StatisticData(
+                    start=datetime.combine(data.data, time(0,0,0,0)), state=data.day_consumption, sum=consumption_sum
+                )
+            )
+
+        consumption_metadata = StatisticMetaData(
+            has_mean=False,
+            has_sum=True,
+            name=f"{self._statistic_id} Consumption",
+            source=DOMAIN,
+            statistic_id=self._statistic_id,
+            unit_of_measurement=UnitOfVolume.LITERS
+        )
+
+        _LOGGER.info(
+            "Adding %s statistics for %s",
+            len(consumption_statistics),
+            self._statistic_id,
+        )
+        async_add_external_statistics(
+            self.hass, consumption_metadata, consumption_statistics
+        )
+
+        _LOGGER.info("Updated statistics for %s", self._statistic_id)
+
+
+    def _clear_statistics(self) -> None:
+        """Clear statistics."""
+        get_instance(self.hass).async_clear_statistics(list(self._statistic_id))
 
     def get_attribution(self) -> str:
         """Get attribution message."""
