@@ -31,7 +31,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{counter_id}",
-            update_interval=timedelta(hours=12),
+            update_interval=timedelta(minutes=3),
             always_update=True,
         )
         self._async_client = async_client
@@ -68,11 +68,12 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 await self._fetch_price()
                 await self._fetch_alerts()
                 await self._async_client.close_session()
-                _LOGGER.debug("Suez update completed")
+                _LOGGER.info("Suez update completed")
                 return {"update": datetime.now()}
         except PySuezError as err:
-            _LOGGER.error("Error retrieving data")
-            raise UpdateFailed(f"Error communicating with API: {err}") from err
+            raise UpdateFailed(
+                f"Suez coordinator error communicating with API: {err}"
+            ) from err
 
     async def _fetch_last_day_consumption_data(self) -> None:
         last_day = await self._data_api.fetch_yesterday_data()
