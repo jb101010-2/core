@@ -71,8 +71,9 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Suez update completed")
                 return {"update": datetime.now()}
         except PySuezError as err:
-            _LOGGER.error("Error retrieving data")
-            raise UpdateFailed(f"Error communicating with API: {err}") from err
+            raise UpdateFailed(
+                f"Suez coordinator error communicating with API: {err}"
+            ) from err
 
     async def _fetch_last_day_consumption_data(self) -> None:
         last_day = await self._data_api.fetch_yesterday_data()
