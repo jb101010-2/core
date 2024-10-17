@@ -22,7 +22,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_COUNTER_ID, DOMAIN
 from .coordinator import SuezWaterCoordinator
 
-SCAN_INTERVAL = timedelta(hours=12)
+SCAN_INTERVAL = timedelta(minutes=5)
 
 _LOGGER = logging.getLogger(__name__)
 
