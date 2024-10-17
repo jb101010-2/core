@@ -1,13 +1,14 @@
 """Suez water update coordinator."""
 
 import asyncio
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, cast
 
 from pysuez import SuezData
 from pysuez.async_client import SuezAsyncClient
 from pysuez.client import PySuezError
 from pysuez.suez_data import AlertResult, ConsumptionIndexResult, DayDataResult
+import pytz
 
 from homeassistant.components.recorder import get_instance
 from homeassistant.components.recorder.models import StatisticData, StatisticMetaData
@@ -35,11 +36,10 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         counter_id: int,
     ) -> None:
         """Initialize my coordinator."""
-        name = f"{DOMAIN}_{counter_id}"
         super().__init__(
             hass,
             _LOGGER,
-            name=name,
+            name=DOMAIN,
             update_interval=timedelta(hours=12),
             always_update=True,
         )
@@ -49,7 +49,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         self._price: None | float = None
         self.alerts: None | AlertResult = None
         self.index: None | ConsumptionIndexResult = None
-        self._statistic_id = f"{name}:water_consumption"
+        self._statistic_id = f"{DOMAIN}:{counter_id}_water_consumption"
         self.config_entry.async_on_unload(self._clear_statistics)
         _LOGGER.debug("Created coordinator")
 
@@ -73,11 +73,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from API endpoint."""
         try:
-            async with asyncio.timeout(60):
-                await self._fetch_last_day_consumption_data()
-                await self._fetch_consumption_index()
+            async with asyncio.timeout(200):
+                #await self._fetch_last_day_consumption_data()
+                #await self._fetch_consumption_index()
                 await self._fetch_price()
-                await self._fetch_alerts()
+                #await self._fetch_alerts()
                 await self._update_historical()
                 await self._async_client.close_session()
                 _LOGGER.info("Suez update completed")
@@ -119,7 +119,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
             )
         _LOGGER.info("last stat of suez is %s", last_stat)
         usage: list[DayDataResult]
-        last_stats_time: date
+        last_stats_time: date | None
         if not last_stat:
                 _LOGGER.debug("Updating statistic for the first time")
                 usage = await self._data_api.fetch_all_available()
@@ -129,16 +129,18 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 previous_stat: StatisticsRow = last_stat[self._statistic_id][0]
                 last_stats_time = datetime.fromtimestamp(previous_stat["start"]).date()
                 usage = await self._data_api.fetch_all_available(
-                    since=last_stats_time.date(),
+                    since=last_stats_time,
                 )
                 if len(usage) <= 0:
                     _LOGGER.debug("No recent usage data. Skipping update")
                     return
                 consumption_sum = cast(float, previous_stat.sum)
-        _LOGGER.info("last stat of suez is %s / %s", consumption_sum, last_stats_time)
+        _LOGGER.info("last saved stat of suez is " +  str(consumption_sum) + " / " +  str(last_stats_time))
         _LOGGER.info("fetched data: %s", len(usage))
 
         consumption_statistics = []
+
+        _LOGGER.warning(f"{pytz.timezone('Europe/Paris')!s}")
 
         for data in usage:
             if last_stats_time is not None and data.date <= last_stats_time:
@@ -146,7 +148,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
             consumption_sum += data.day_consumption
             consumption_statistics.append(
                 StatisticData(
-                    start=datetime.combine(data.data, time(0,0,0,0)), state=data.day_consumption, sum=consumption_sum
+                    start=datetime.combine(data.date, time(0,0,0,0), pytz.timezone('Europe/Paris')), state=data.day_consumption, sum=consumption_sum
                 )
             )
 
