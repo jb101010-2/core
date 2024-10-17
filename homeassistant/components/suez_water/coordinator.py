@@ -131,7 +131,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 usage = await self._data_api.fetch_all_available(
                     since=last_stats_time,
                 )
-                if len(usage) <= 0:
+                if usage is None or len(usage) <= 0:
                     _LOGGER.debug("No recent usage data. Skipping update")
                     return
                 consumption_sum = cast(float, previous_stat.sum)
