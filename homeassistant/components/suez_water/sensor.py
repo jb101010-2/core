@@ -102,11 +102,7 @@ class SuezLastDayConsumptionSensor(SuezSensorEntity):
         if self.coordinator.consumption_last_day is None:
             return None
         return {
-            "date": date(
-                year=self.coordinator.consumption_last_day.year,
-                month=self.coordinator.consumption_last_day.month,
-                day=self.coordinator.consumption_last_day.day,
-            )
+            "date": self.coordinator.consumption_last_day.date
         }
 
 
@@ -114,7 +110,7 @@ class SuezPriceSensor(SuezSensorEntity):
     """Representation of a Price Sensor."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_native_unit_of_measurement = CURRENCY_EURO
+    _attr_native_unit_of_measurement = CURRENCY_EURO + "/" + UnitOfVolume.CUBIC_METERS
 
     def __init__(self, coordinator: SuezWaterCoordinator, counter_id: int) -> None:
         """Initialize Price sensor."""

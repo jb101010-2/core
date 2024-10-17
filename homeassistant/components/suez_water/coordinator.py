@@ -23,6 +23,7 @@ from homeassistant.exceptions import ConfigEntryError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN
+from ..toon.const import CURRENCY_EUR
 
 
 class SuezWaterCoordinator(DataUpdateCoordinator):
@@ -49,7 +50,7 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         self._price: None | float = None
         self.alerts: None | AlertResult = None
         self.index: None | ConsumptionIndexResult = None
-        self._statistic_id = f"{DOMAIN}:{counter_id}_water_consumption"
+        self._statistic_id = f"{DOMAIN}:{counter_id}_water_consumption_v2"
         self.config_entry.async_on_unload(self._clear_statistics)
         _LOGGER.debug("Created coordinator")
 
@@ -74,10 +75,10 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         """Fetch data from API endpoint."""
         try:
             async with asyncio.timeout(200):
-                #await self._fetch_last_day_consumption_data()
-                #await self._fetch_consumption_index()
+                await self._fetch_last_day_consumption_data()
+                await self._fetch_consumption_index()
                 await self._fetch_price()
-                #await self._fetch_alerts()
+                await self._fetch_alerts()
                 await self._update_historical()
                 await self._async_client.close_session()
                 _LOGGER.info("Suez update completed")
@@ -113,9 +114,13 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
 
     async def _update_historical(self) -> None:
         _LOGGER.info("Updating statistics for %s", self._statistic_id)
+        cost_stat_id = self._statistic_id + "_cost"
 
         last_stat = await get_instance(self.hass).async_add_executor_job(
                 get_last_statistics, self.hass, 1, self._statistic_id, True, set()
+            )
+        cost_last_stat = await get_instance(self.hass).async_add_executor_job(
+                get_last_statistics, self.hass, 1, cost_stat_id, True, set()
             )
         _LOGGER.info("last stat of suez is %s", last_stat)
         usage: list[DayDataResult]
@@ -124,9 +129,11 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("Updating statistic for the first time")
                 usage = await self._data_api.fetch_all_available()
                 consumption_sum = 0.0
+                cost_sum = 0.0
                 last_stats_time = None
         else:
                 previous_stat: StatisticsRow = last_stat[self._statistic_id][0]
+                previous_cost_stat: StatisticsRow = cost_last_stat[cost_stat_id][0]
                 last_stats_time = datetime.fromtimestamp(previous_stat["start"]).date()
                 usage = await self._data_api.fetch_all_available(
                     since=last_stats_time,
@@ -135,10 +142,12 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("No recent usage data. Skipping update")
                     return
                 consumption_sum = cast(float, previous_stat.sum)
+                cost_sum = cast(float, previous_cost_stat.sum)
         _LOGGER.info("last saved stat of suez is " +  str(consumption_sum) + " / " +  str(last_stats_time))
         _LOGGER.info("fetched data: %s", len(usage))
 
         consumption_statistics = []
+        cost_statistics = []
 
         _LOGGER.warning(f"{pytz.timezone('Europe/Paris')!s}")
 
@@ -151,6 +160,13 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
                     start=datetime.combine(data.date, time(0,0,0,0), pytz.timezone('Europe/Paris')), state=data.day_consumption, sum=consumption_sum
                 )
             )
+            day_cost = (data.day_consumption / 1000) * self._price
+            cost_sum = cost_sum + day_cost
+            cost_statistics.append(
+                StatisticData(
+                    start=datetime.combine(data.date, time(0,0,0,0), pytz.timezone('Europe/Paris')), state=day_cost, sum=cost_sum
+                )
+            )
 
         consumption_metadata = StatisticMetaData(
             has_mean=False,
@@ -160,6 +176,14 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
             statistic_id=self._statistic_id,
             unit_of_measurement=UnitOfVolume.LITERS
         )
+        cost_metadata = StatisticMetaData(
+            has_mean=False,
+            has_sum=True,
+            name=f"{self._statistic_id} Consumption cost",
+            source=DOMAIN,
+            statistic_id=cost_stat_id,
+            unit_of_measurement=CURRENCY_EUR + "/" + UnitOfVolume.LITERS
+        )
 
         _LOGGER.info(
             "Adding %s statistics for %s",
@@ -168,6 +192,9 @@ class SuezWaterCoordinator(DataUpdateCoordinator):
         )
         async_add_external_statistics(
             self.hass, consumption_metadata, consumption_statistics
+        )
+        async_add_external_statistics(
+            self.hass, cost_metadata, cost_statistics
         )
 
         _LOGGER.info("Updated statistics for %s", self._statistic_id)
